@@ -11,6 +11,19 @@ import {
 
 const app = new Hono();
 
+const toJsonStatus = (
+  status: number
+): 400 | 401 | 403 | 404 | 429 | 500 | 502 | 503 => {
+  if (status === 400) return 400;
+  if (status === 401) return 401;
+  if (status === 403) return 403;
+  if (status === 404) return 404;
+  if (status === 429) return 429;
+  if (status === 502) return 502;
+  if (status === 503) return 503;
+  return 500;
+};
+
 const toOptionalNumber = (value: unknown) => {
   if (value === null || value === undefined || value === '') return undefined;
   const parsed = Number(value);
@@ -363,7 +376,7 @@ app.post('/api/telegram/get-updates', async (c) => {
         error: result.error,
         raw: result.raw
       },
-      result.status
+      toJsonStatus(result.status)
     );
   }
 
@@ -420,7 +433,7 @@ app.post('/api/telegram/find-chat-id', async (c) => {
           error: result.error,
           raw: result.raw
         },
-        result.status
+        toJsonStatus(result.status)
       );
     }
 
