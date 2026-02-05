@@ -336,7 +336,7 @@ const renderViaTelegramPage = () => `<!doctype html>
 
 app.use('/api/*', cors());
 
-app.get('/', (c) => c.redirect('/via-telegram'));
+app.get('/', (c) => c.text('ok'));
 
 app.get('/health', (c) => {
   return c.json({
@@ -467,16 +467,56 @@ app.post('/api/telegram/find-chat-id', async (c) => {
   });
 });
 
-const port = Number(process.env.PORT ?? 3000);
+const resolvePort = () => {
+  const candidates = [
+    process.env.PORT,
+    process.env.COOLIFY_CONTAINER_PORT,
+    process.env.SERVICE_PORT,
+    process.env.APP_PORT
+  ];
 
-serve(
-  {
-    fetch: app.fetch,
-    port
-  },
-  (info) => {
-    console.log(`Telegram via helper is running on http://localhost:${info.port}`);
+  for (const value of candidates) {
+    if (!value) continue;
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535) {
+      return parsed;
+    }
   }
-);
+
+  return 3000;
+};
+
+const hostname = process.env.HOST || '0.0.0.0';
+const primaryPort = resolvePort();
+
+const startServer = (port: number, label: string) => {
+  try {
+    serve(
+      {
+        fetch: app.fetch,
+        port,
+        hostname
+      },
+      (info) => {
+        console.log(`[${label}] Telegram via helper is running on http://${hostname}:${info.port}`);
+      }
+    );
+    return true;
+  } catch (error) {
+    console.error(`[${label}] failed to bind port ${port}`, error);
+    return false;
+  }
+};
+
+const startedPrimary = startServer(primaryPort, 'primary');
+
+// Coolify/Nixpacks health checks may probe :80 when PORT is missing.
+if (!process.env.PORT && primaryPort !== 80) {
+  startServer(80, 'fallback');
+}
+
+if (!startedPrimary) {
+  process.exit(1);
+}
 
 export default app;
