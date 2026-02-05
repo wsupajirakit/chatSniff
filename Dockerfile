@@ -20,6 +20,6 @@ COPY --from=builder /app/dist ./dist
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=8 \
-  CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/health" >/dev/null || wget -qO- http://127.0.0.1/ >/dev/null || exit 1
+  CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/health" >/dev/null || wget -qO- http://127.0.0.1:80/health >/dev/null || exit 1
 
 CMD ["npm", "run", "start"]

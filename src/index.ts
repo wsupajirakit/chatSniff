@@ -336,7 +336,7 @@ const renderViaTelegramPage = () => `<!doctype html>
 
 app.use('/api/*', cors());
 
-app.get('/', (c) => c.text('ok'));
+app.get('/', (c) => c.redirect('/via-telegram'));
 
 app.get('/health', (c) => {
   return c.json({
