@@ -1,0 +1,4 @@
+stamp=202607081109_889b9273
+from_snapshot=202607081109_889b9273
+n_csv=9
+kinds=digest.md,report.md

@@ -1,0 +1,71 @@
+#!/bin/bash
+# radar — universal bash CLI for the stock-radar UIPT pipeline.
+# For ANY AI agent (Gemini, GPT, etc.) or human. Wraps the Claude-skill scripts
+# WITHOUT modifying them. Read skill-automate/MANUAL.md before using.
+set -e
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+RUN="$ROOT/.claude/skills/us-stock-fund-manager/scripts/run.sh"
+PY="$ROOT/.claude/skills/us-stock-fund-manager/scripts/.venv/bin/python"
+
+cd "$ROOT"
+
+case "${1:-run}" in
+  run)            exec "$RUN" ;;
+  rank)           shift; exec "$PY" "$ROOT/skill-automate/rank.py" "$@" ;;
+  digest)         exec "$RUN" --digest ;;
+  compare)        shift; exec "$RUN" --compare "$@" ;;
+  force)          exec "$RUN" --force ;;
+  force-mode)     exec "$RUN" --force-mode ;;
+  clean-csv)      exec "$RUN" --clean-csv ;;
+  clean-history)  exec "$RUN" --clean-history "${2:-10}" ;;
+  clean-all)      exec "$RUN" --clean-all ;;
+  clear-all)      exec "$RUN" --clear-all ;;
+  archives)       exec "$RUN" --archives ;;
+  archive-report) shift; exec "$RUN" --archive-report "$@" ;;
+  save-report)    [ -z "$2" ] && { echo "usage: radar save-report <file.md>"; exit 1; }
+                  exec "$RUN" --save-report "$2" ;;
+  latest-report)  cat "$ROOT/history/reports/report_latest.md" 2>/dev/null \
+                    || echo "no report yet — run an analysis first" ;;
+  reports)        ls -1 "$ROOT/history/reports/" 2>/dev/null || echo "(empty)" ;;
+  show-report)    [ -z "$2" ] && { echo "usage: radar show-report <filename>"; exit 1; }
+                  cat "$ROOT/history/reports/$2" ;;
+  json)           # print full.json path of latest snapshot (for custom queries)
+                  snap="$(cat "$ROOT/history/LATEST" 2>/dev/null)" || { echo "no snapshot"; exit 1; }
+                  echo "$ROOT/history/$snap/full.json" ;;
+  py)             # run inline python with radar_lib importable (custom queries)
+                  shift; exec "$PY" -c "import sys; sys.path.insert(0,'$ROOT/.claude/skills/us-stock-fund-manager/scripts'); $*" ;;
+  status)         echo "csv files : $(ls "$ROOT"/csv/*.csv 2>/dev/null | wc -l | tr -d ' ')"
+                  echo "snapshots : $(ls "$ROOT/history" 2>/dev/null | grep -cE '^[0-9]{12}' || echo 0)"
+                  echo "reports   : $(ls "$ROOT/history/reports" 2>/dev/null | wc -l | tr -d ' ')"
+                  echo "latest    : $(cat "$ROOT/history/LATEST" 2>/dev/null || echo '-')" ;;
+  help|-h|--help) cat <<'EOF'
+radar — stock-radar UIPT pipeline CLI (any AI / human)
+
+USAGE: skill-automate/radar <command>
+
+  run              auto: new csv -> compute+save snapshot; unchanged csv -> reuse (DEFAULT)
+  rank M|S|P|all [N]  ranked shortlist: medium(UIPT-M) / short(UIPT-S) / port / all
+  digest           print latest saved digest, zero recompute
+  compare [A B]    diff two snapshots (default: latest two)
+  force            recompute even if csv unchanged (history kept)
+  force-mode       wipe ALL snapshots, recompute from newest csv
+  clean-csv        delete superseded csv duplicates
+  clean-history N  keep newest N snapshots (default 10)
+  clean-all        delete ALL csv + ALL snapshots (reports/ ALWAYS kept)
+  clear-all        SAFE RESET: stamp csv+digest+report to legacy archive, THEN wipe csv/+history/
+  archives         list every legacy set ever stamped (permanent, survives all wipes)
+  archive-report [STAMP]  print an archived report (default newest) — read old analyses back
+  save-report F.md save report -> reports/report_latest.md + dated copy + auto-stamp to report_archive/
+  latest-report    print the newest saved report
+  reports          list archived dated reports
+  show-report F    print one archived report
+  json             print path of latest full.json (all computed data)
+  py "CODE"        run python with radar_lib importable
+  status           counts of csv/snapshots/reports
+
+WORKFLOW (see MANUAL.md): put csv in csv/ -> radar run -> read digest ->
+write report (your analysis) -> radar save-report report.md
+EOF
+                  ;;
+  *)              echo "unknown command: $1  (radar help)"; exit 1 ;;
+esac
