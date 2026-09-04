@@ -1,0 +1,36 @@
+{
+  "name": "tv-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "start": "expo start",
+    "prebuild": "export EXPO_TV=1 && expo prebuild --clean",
+    "android": "export EXPO_TV=1 && expo run:android",
+    "ios": "export EXPO_TV=1 && expo run:ios"
+  },
+  "dependencies": {
+    "expo": "~57.0.13",
+    "expo-linear-gradient": "~57.0.1",
+    "expo-status-bar": "~57.0.1",
+    "expo-video": "~57.0.2",
+    "react": "19.2.3",
+    "react-native": "npm:react-native-tvos@0.86.2-0"
+  },
+  "devDependencies": {
+    "@react-native-tvos/config-tv": "^0.1.6"
+  },
+  "overrides": {
+    "react-native": "npm:react-native-tvos@0.86.2-0",
+    "react-native-tvos": {
+      "react-native": "$react-native"
+    }
+  },
+  "expo": {
+    "install": {
+      "exclude": [
+        "react-native"
+      ]
+    }
+  }
+}

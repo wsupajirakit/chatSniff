@@ -1,0 +1,48 @@
+{
+  "expo": {
+    "name": "TV Live",
+    "slug": "tv-live",
+    "version": "1.0.0",
+    "orientation": "landscape",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#07090F",
+    "splash": {
+      "image": "./assets/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#07090F"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.gtx.tvlive"
+    },
+    "android": {
+      "package": "com.gtx.tvlive",
+      "adaptiveIcon": {
+        "backgroundColor": "#07090F",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "@react-native-tvos/config-tv",
+        {
+          "isTV": true,
+          "//": "16.4 คือขั้นต่ำที่ expo-video และ expo-linear-gradient ประกาศไว้ใน podspec ตั้งต่ำกว่านี้ CocoaPods จะไม่ยอม resolve",
+          "tvosDeploymentTarget": "16.4",
+          "androidTVBanner": "./assets/icon.png",
+          "showVerboseWarnings": false
+        }
+      ],
+      "expo-video"
+    ],
+    "extra": {
+      "//": "ตั้ง URL ของ backend ผ่าน env EXPO_PUBLIC_API_URL ตอน start ก็ได้"
+    }
+  }
+}
