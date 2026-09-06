@@ -986,5 +986,33 @@ ExoPlayer พ่น Error `Response code: 410 (Gone)` เนื่องจา�
 - **Expo Bundler:** Bundled 610 modules ใน 3661ms (0 errors)
 - **Gradle Release Build:** `./gradlew assembleRelease --no-daemon`: **`BUILD SUCCESSFUL in 20s`** (260 tasks)
 - **ไฟล์ APK พร้อมติดตั้ง:**
-  - [**`tvApp.apk`**](tvApp.apk) (ขนาด ~43 MB, อัปเดตล่าสุด `06/09/2026 18:59 น.`)
-  - [**`tvApp.apk.zip`**](tvApp.apk.zip) (ขนาด ~26 MB, อัปเดตล่าสุด `06/09/2026 18:59 น.`)
+  - [**`tvApp.apk`**](tvApp.apk) (ขนาด ~43 MB, อัปเดตล่าสุด `06/09/2026 19:03 น.`)
+  - [**`tvApp.apk.zip`**](tvApp.apk.zip) (ขนาด ~26 MB, อัปเดตล่าสุด `06/09/2026 19:03 น.`)
+
+---
+
+## 19. รองรับการ Hover ผ่านเมาส์/Air Mouse พร้อมไฮไลต์นีออนสีสดเด่นชัดขั้นสุด (06/09/2026 19:03 น.)
+
+### 19.1 โจทย์และความต้องการของผู้ใช้
+- "hilighrt hover ชัดๆสีเด่น"
+- เมื่อเลื่อนเมาส์ หรือรีโมตแบบ Air Mouse / Pointer ไปชี้ที่แถวช่อง ไฮไลต์โฟกัสต้องติดสว่างทันทีแบบเรียลไทม์ ชัดเจน สีสด โดดเด่นสะดุดตา
+
+### 19.2 การวิเคราะห์และแก้ไขเชิงเทคนิค
+1. **แก้ปัญหาไม่ดักจับ Hover ใน Pressable:**
+   - โค้ดเดิมใน `ChannelRow.js` และ `Sidebar.js` รับเฉพาะพารามิเตอร์ `{ focused }` ทำให้เมื่อใช้เมาส์ชี้ `hovered` กลายเป็นจริงแต่ UI ไม่แสดงไฮไลต์
+   - ทำการรวม 3 สถานะ: `const isHighlighted = Boolean(focused || hovered || isHovered)`
+   - เพิ่ม `onHoverIn` และ `onHoverOut` ใน `<Pressable>` พร้อมสั่ง `onFocus?.(channel)` ตอน Hover เพื่อให้ Sidebar กางออกแสดงชื่อช่องอัตโนมัติ
+2. **ยกระดับ Focus & Hover Highlight สีเด่นสะใจ:**
+   - ขอบนีออน Electric Cyan (`#00FFFF`) หนาขึ้นเป็น **4px**
+   - เสานีออนนำสายตาซ้ายมือ (`focusPill`) กว้าง **7px** (จากเดิม 6px)
+   - กรอบรอบตัวเลข Avatar หนา **3px** นีออนเรืองแสง
+   - เพิ่ม `cursor: 'pointer'` สำหรับการควบคุมด้วยเมาส์
+   - ปุ่มรีโหลดช่องและปุ่มลองใหม่รองรับการ Hover สไตล์นีออนเดียวกัน 100%
+
+### 19.3 ผลการ Build และส่งมอบ
+- **Expo Bundler:** Bundled 610 modules ใน 5834ms (0 errors)
+- **Gradle Release Build:** `./gradlew assembleRelease --no-daemon`: **`BUILD SUCCESSFUL in 21s`** (260 tasks)
+- **ไฟล์ APK พร้อมติดตั้ง:**
+  - [**`tvApp.apk`**](tvApp.apk) (ขนาด ~43 MB, อัปเดตล่าสุด `06/09/2026 19:03 น.`)
+  - [**`tvApp.apk.zip`**](tvApp.apk.zip) (ขนาด ~26 MB, อัปเดตล่าสุด `06/09/2026 19:03 น.`)
+
