@@ -7,7 +7,8 @@
     "start": "expo start",
     "prebuild": "export EXPO_TV=1 && expo prebuild --clean",
     "android": "export EXPO_TV=1 && expo run:android",
-    "ios": "export EXPO_TV=1 && expo run:ios"
+    "ios": "export EXPO_TV=1 && expo run:ios",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "expo": "~57.0.13",
@@ -18,7 +19,8 @@
     "react-native": "npm:react-native-tvos@0.86.2-0"
   },
   "devDependencies": {
-    "@react-native-tvos/config-tv": "^0.1.6"
+    "@react-native-tvos/config-tv": "^0.1.6",
+    "patch-package": "^8.0.0"
   },
   "overrides": {
     "react-native": "npm:react-native-tvos@0.86.2-0",

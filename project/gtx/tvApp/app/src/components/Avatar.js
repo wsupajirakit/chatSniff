@@ -30,25 +30,48 @@ function hash(text) {
   return Math.abs(h)
 }
 
-/** ดึงตัวอักษรภาษาอังกฤษหรือตัวแรกของชื่อช่อง */
-function getInitialChar(name) {
-  const trimmed = String(name || '').trim()
-  if (!trimmed) return 'TV'
-  // ค้นหาตัวอักษรหรือตัวเลขแรก
-  const chars = [...trimmed]
-  return chars[0].toUpperCase()
+/** ดึงเลขช่อง หรือตัวอักษรภาษาอังกฤษ/ตัวแรกของชื่อช่อง */
+function getChannelLabel(channel) {
+  if (!channel) return 'TV'
+  if (channel.isMain) return '★'
+  const name = String(channel.name || '').trim()
+
+  // ดึงหมายเลขช่องออกมาแสดงชัดเจน (เช่น 3, 5, 7, 9, 23, 25, 29, 31, 32, 34, 8, 24, 2)
+  const numMatch = name.match(/\d+/)
+  if (numMatch) {
+    return numMatch[0]
+  }
+
+  // กรณีเป็น Thai PBS
+  if (/thai\s*pbs/i.test(name)) return '3'
+
+  const chars = [...name]
+  return chars[0]?.toUpperCase() || 'TV'
 }
 
 /**
- * Icon ช่องแบบสร้างจากตัวอักษรแรก (Alphabet) คละสี ขนาดใหญ่ ชัดเจน สไตล์ tvOS
+ * Icon ช่องแบบสร้างจากตัวเลขช่อง/ตัวอักษร คละสี ขนาดใหญ่ขึ้น +25% ชัดเจนสะใจสไตล์ tvOS
  */
 export function Avatar({ channel, size = 52 }) {
   const isMain = channel?.isMain
   const name = channel?.name || 'TV'
-  const letter = isMain ? '★' : getInitialChar(name)
+  const label = getChannelLabel(channel)
   const colorIndex = hash(name) % VIBRANT_PALETTES.length
   const colors = isMain ? ['#F59E0B', '#B45309'] : VIBRANT_PALETTES[colorIndex]
   const radius = Math.round(size * 0.32)
+
+  // คำนวณขนาดตัวหนังสือ: ขยายใหญ่ขึ้น +25% ถึง +35% ตัวเลขช่องเด่นชัดเต็มตา
+  const fontSize = label.length <= 1
+    ? Math.round(size * 0.70)
+    : label.length === 2
+    ? Math.round(size * 0.58)
+    : Math.round(size * 0.38)
+
+  const lineHeight = label.length <= 1
+    ? Math.round(size * 0.78)
+    : label.length === 2
+    ? Math.round(size * 0.66)
+    : Math.round(size * 0.46)
 
   return (
     <View style={[styles.wrapper, { width: size, height: size, borderRadius: radius }]}>
@@ -62,13 +85,14 @@ export function Avatar({ channel, size = 52 }) {
           style={[
             styles.letter,
             {
-              fontSize: Math.round(size * 0.48),
-              lineHeight: Math.round(size * 0.58),
+              fontSize,
+              lineHeight,
+              letterSpacing: label.length === 2 ? -1 : -0.2,
             },
           ]}
           numberOfLines={1}
         >
-          {letter}
+          {label}
         </Text>
       </LinearGradient>
     </View>
@@ -88,15 +112,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
   },
   letter: {
     color: '#FFFFFF',
     fontWeight: '900',
     textAlign: 'center',
+    textAlignVertical: 'center',
     includeFontPadding: false,
-    textShadowColor: 'rgba(0, 0, 0, 0.35)',
-    textShadowOffset: { width: 0, height: 1 },
-    textShadowRadius: 2,
+    textShadowColor: 'rgba(0, 0, 0, 0.55)',
+    textShadowOffset: { width: 0, height: 1.5 },
+    textShadowRadius: 3,
   },
 })

@@ -3,6 +3,8 @@ import { StatusBar, StyleSheet, useTVEventHandler, View } from 'react-native'
 import { theme } from './src/theme'
 import { useChannels } from './src/lib/useChannels'
 import { fetchChannel } from './src/lib/api'
+import { logState } from './src/lib/logger'
+import { isCh3, renewCh3Auto, onCh3UrlUpdated, getCh3CachedUrl } from './src/lib/streamResolver'
 import { Sidebar } from './src/components/Sidebar'
 import { Player } from './src/components/Player'
 import { ChannelBadge } from './src/components/ChannelBadge'
@@ -27,8 +29,30 @@ export default function App() {
   const [playing, setPlaying] = useState(MAIN_CHANNEL)
   const [badgeVisible, setBadgeVisible] = useState(false)
 
-  const switchTimer = useRef(null)
   const badgeTimer = useRef(null)
+  const playingRef = useRef(playing)
+  playingRef.current = playing
+
+  useEffect(() => {
+    logState('APP_MOUNTED', 'TV App started', { channelCount: remoteChannels?.length || 0 })
+  }, [remoteChannels?.length])
+
+  // ซิงค์ URL ช่อง 3 ทันทีเมื่อมีการต่ออายุสำเร็จจากเบื้องหลัง
+  useEffect(() => {
+    return onCh3UrlUpdated((newUrl) => {
+      if (!newUrl) return
+      setPlaying((current) => {
+        if (current && isCh3(current) && current.url !== newUrl) {
+          logState('PLAYING_CH3_URL_SYNCED', 'Updated playing Channel 3 with newly renewed URL', {
+            oldUrl: current.url,
+            newUrl,
+          }, current)
+          return { ...current, url: newUrl }
+        }
+        return current
+      })
+    })
+  }, [])
 
   const showBadgeBriefly = useCallback(() => {
     setBadgeVisible(true)
@@ -51,8 +75,35 @@ export default function App() {
   const commit = useCallback(
     (channel) => {
       if (!channel) return
-      clearTimeout(switchTimer.current)
-      setPlaying({ ...channel, _loadEpoch: Date.now() })
+
+      let targetChannel = channel
+
+      // ทุกครั้งที่มีการสั่งเล่นช่อง 3 ให้ต่ออายุอัตโนมัติทันที
+      if (isCh3(channel)) {
+        const cached = getCh3CachedUrl()
+        if (cached && cached !== channel.url) {
+          targetChannel = { ...channel, url: cached }
+        }
+        renewCh3Auto({
+          channelId: channel.id,
+          currentUrl: targetChannel.url,
+          trigger: 'play_select_card',
+          force: true,
+        }).catch(() => {})
+      }
+
+      // ถ้าเป็นช่องเดิมที่กำลังเล่นอยู่แล้ว ไม่ต้องรีเซ็ต epoch ป้องกันการ reload โดยไม่จำเป็น
+      if (playingRef.current?.id === targetChannel.id && !targetChannel.isMain) {
+        showBadgeBriefly()
+        return
+      }
+
+      logState('CHANNEL_COMMITTED', `Switching to ${targetChannel.name}`, {
+        channelId: targetChannel.id,
+        url: targetChannel.url,
+      }, targetChannel)
+
+      setPlaying({ ...targetChannel, _loadEpoch: Date.now() })
       showBadgeBriefly()
     },
     [showBadgeBriefly],
@@ -97,6 +148,11 @@ export default function App() {
     if (!found) {
       setPlaying(MAIN_CHANNEL)
     } else if (found.url !== playing.url || found.name !== playing.name) {
+      logState('CHANNEL_BACKEND_UPDATED', `Channel URL or name changed on backend: ${found.name}`, {
+        oldUrl: playing.url,
+        newUrl: found.url,
+      }, found)
+
       setPlaying((current) => ({
         ...found,
         _loadEpoch: current?._loadEpoch || Date.now(),
@@ -107,40 +163,62 @@ export default function App() {
   const handleFocusChannel = useCallback(
     (channel) => {
       if (!channel) return
-      clearTimeout(switchTimer.current)
-      // หน่วงเวลา 450ms ก่อนสลับวิดีโอ เพื่อให้ตอนเลื่อนช่องด้วยรีโมตเร็วๆ ลื่นไหล 60fps ไม่แย่งชิง MediaCodec
-      switchTimer.current = setTimeout(() => {
-        setPlaying({ ...channel, _loadEpoch: Date.now() })
-        showBadgeBriefly()
-      }, 450)
+
+      // เมื่อเลื่อนมาโฟกัสที่การ์ดช่อง 3 ให้กระตุ้นการต่ออายุอัตโนมัติล่วงหน้าทันทีในเบื้องหลัง
+      if (isCh3(channel)) {
+        renewCh3Auto({
+          channelId: channel.id,
+          currentUrl: channel.url,
+          trigger: 'focus_card',
+        }).catch(() => {})
+      }
+
+      // UX: เวลาเลื่อนดูรายการช่อง จะไม่สลับช่องอัตโนมัติเด็ดขาด
+      // ผู้ใช้ต้องกดปุ่มตรงกลางรีโมต (OK / Select / Center) ก่อนเท่านั้น ถึงจะสลับไปเล่นช่องนั้น
     },
-    [showBadgeBriefly],
+    [],
   )
 
   const handleSelectChannel = useCallback(
     (channel) => {
-      // ถ้ากดปุ่ม OK หรือ Select ให้เล่นทันที 0ms
+      // เมื่อผู้ใช้กดปุ่มตรงกลางรีโมต (OK / Select / Center) ให้สลับไปเล่นช่องที่เลือกทันที 0ms
       commit(channel)
     },
     [commit],
   )
 
-  // ดึง URL ล่าสุดจาก backend กรณีสตรีมหลุดและสงสัยว่าลิงก์เดิมหมดอายุ
+  // ดึง URL ล่าสุดกรณีสตรีมหลุดและสงสัยว่าลิงก์เดิมหมดอายุ
   const handleRefreshChannel = useCallback(async (channelId) => {
     if (!channelId || channelId === MAIN_CHANNEL.id) return null
     try {
-      const fresh = await fetchChannel(channelId)
-      if (fresh?.url) {
+      logState('FETCH_FRESH_URL_REQUEST', `Requesting fresh channel URL for ${channelId}`, { channelId })
+      
+      let freshUrl = null
+      if (isCh3({ id: channelId })) {
+        freshUrl = await renewCh3Auto({
+          channelId,
+          trigger: 'handle_refresh_channel',
+          force: true,
+        })
+      }
+
+      if (!freshUrl) {
+        const fresh = await fetchChannel(channelId, { refresh: true })
+        freshUrl = fresh?.url
+      }
+
+      if (freshUrl) {
         setPlaying((current) => {
           if (current?.id === channelId) {
-            return { ...current, url: fresh.url }
+            return { ...current, url: freshUrl }
           }
           return current
         })
-        return fresh
+        logState('FETCH_FRESH_URL_SUCCESS', `Obtained fresh URL for ${channelId}`, { url: freshUrl })
+        return { id: channelId, url: freshUrl }
       }
     } catch (err) {
-      console.log('[App] refreshChannel error:', err?.message)
+      logState('FETCH_FRESH_URL_FAILED', `Failed to fetch fresh URL: ${err?.message}`, { error: err?.message })
     }
     return null
   }, [])
@@ -163,6 +241,7 @@ export default function App() {
       {/* แถบรายการช่อง ค้างไว้ตลอดเวลา 11% ทางซ้าย สไตล์ tvOS 17.2 */}
       <Sidebar
         channels={channels}
+        remoteCount={remoteChannels?.length || 0}
         status={status}
         error={error}
         playingId={playing?.id}

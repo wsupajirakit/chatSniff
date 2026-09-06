@@ -14,9 +14,10 @@ import { LinearGradient } from 'expo-linear-gradient'
 import { ChannelRow } from './ChannelRow'
 import { RowSkeleton } from './Loading'
 import { Clock } from './Clock'
+import { triggerCh3AutoRenew } from '../lib/streamResolver'
 
-const EXPANDED_WIDTH = 220
-const COLLAPSED_WIDTH = 70
+const EXPANDED_WIDTH = 235
+const COLLAPSED_WIDTH = 74
 
 /**
  * แถบช่องด้านซ้าย สไตล์ tvOS 17.2:
@@ -25,6 +26,7 @@ const COLLAPSED_WIDTH = 70
  */
 export function Sidebar({
   channels,
+  remoteCount,
   status,
   error,
   playingId,
@@ -40,6 +42,8 @@ export function Sidebar({
 
   const collapse = useCallback(() => {
     setIsCollapsed(true)
+    // เมื่อย่อ sidebar: ต่ออายุช่อง 3 ใน background
+    triggerCh3AutoRenew('sidebar_collapse')
     Animated.spring(widthAnim, {
       toValue: COLLAPSED_WIDTH,
       useNativeDriver: false,
@@ -50,6 +54,8 @@ export function Sidebar({
 
   const expand = useCallback(() => {
     setIsCollapsed(false)
+    // เมื่อเปิด/กาง sidebar: ต่ออายุช่อง 3 ใน background ทันที
+    triggerCh3AutoRenew('sidebar_expand')
     Animated.spring(widthAnim, {
       toValue: EXPANDED_WIDTH,
       useNativeDriver: false,
@@ -63,12 +69,16 @@ export function Sidebar({
     }, 2800)
   }, [widthAnim, collapse])
 
+  const userPressedRemoteRef = useRef(false)
+
   // ตอนกดปุ่มรีโมทขึ้นลงหรือกดเลือก ให้กาง sidebar ทันที (ไม่ดักจับ event focus เพื่อป้องกัน loop)
   const handleTVEvent = useCallback(
     (evt) => {
       const type = evt?.eventType
       if (type && ['up', 'down', 'left', 'right', 'select'].includes(type)) {
+        userPressedRemoteRef.current = true
         expand()
+        triggerCh3AutoRenew('sidebar_tv_nav')
       }
     },
     [expand],
@@ -87,10 +97,21 @@ export function Sidebar({
   const handleFocus = useCallback(
     (channel) => {
       expand()
-      // ปล่อยให้ Android TV Native Focus เลื่อน viewport ตามตำแหน่งอย่างลื่นไหล 60fps
       onFocusChannel?.(channel)
     },
     [expand, onFocusChannel],
+  )
+
+  const handleSelect = useCallback(
+    (channel) => {
+      onSelectChannel?.(channel)
+      // กดยืนยันเลือกช่องแล้ว เริ่มนับถอยหลังย่อ sidebar เพื่อให้เห็นสตรีมเต็มจอ
+      clearTimeout(collapseTimer.current)
+      collapseTimer.current = setTimeout(() => {
+        collapse()
+      }, 1800)
+    },
+    [onSelectChannel, collapse],
   )
 
   // คำนวณ index เริ่มต้นเพียงครั้งแรกตอน mount เพื่อไม่ให้ flatlist re-render ยกแผงทุกครั้งที่เลื่อน
@@ -107,10 +128,10 @@ export function Sidebar({
         preferFocus={index === initialIndex}
         isCollapsed={isCollapsed}
         onFocus={handleFocus}
-        onPress={onSelectChannel}
+        onPress={handleSelect}
       />
     ),
-    [handleFocus, onSelectChannel, playingId, initialIndex, isCollapsed],
+    [handleFocus, handleSelect, playingId, initialIndex, isCollapsed],
   )
 
   return (
@@ -125,8 +146,19 @@ export function Sidebar({
           <>
             <View style={styles.titleWrap}>
               <Text style={styles.title} numberOfLines={1}>ช่องทีวี</Text>
-              <Text style={styles.subtitle} numberOfLines={1}>
-                {status === 'ready' ? `${channels.length} ช่อง` : 'กำลังเชื่อมต่อ...'}
+              <Text
+                style={[
+                  styles.subtitle,
+                  status === 'error' && styles.subtitleError,
+                  status === 'loading' && styles.subtitleLoading,
+                ]}
+                numberOfLines={1}
+              >
+                {status === 'loading'
+                  ? '⏳ กำลังเชื่อมต่อ...'
+                  : status === 'error'
+                  ? '⚠️ ต่อเซิร์ฟเวอร์ไม่ได้'
+                  : `${remoteCount !== undefined ? remoteCount : channels.length} ช่อง`}
               </Text>
             </View>
             <Clock />
@@ -139,6 +171,59 @@ export function Sidebar({
       </View>
 
       <TVFocusGuideView style={styles.listWrap} trapFocusLeft>
+        {/* ปุ่มรีโหลดช่อง รองรับรีโมท D-pad กดขึ้นจากช่องแรกเพื่อโฟกัส และรองรับเมาส์ Hover */}
+        <View style={[styles.reloadBar, isCollapsed && styles.reloadBarCollapsed]}>
+          <Pressable
+            focusable
+            onFocus={() => {
+              expand()
+            }}
+            onHoverIn={() => {
+              expand()
+            }}
+            onPress={() => {
+              expand()
+              onRetry?.()
+            }}
+            style={({ focused, hovered }) => [
+              styles.reloadBtn,
+              isCollapsed && styles.reloadBtnCollapsed,
+              (focused || hovered) && styles.reloadBtnFocused,
+              status === 'loading' && styles.reloadBtnLoading,
+            ]}
+          >
+            {({ focused, hovered }) => {
+              const isHighlighted = Boolean(focused || hovered)
+              return (
+                <View style={[styles.reloadInner, isCollapsed && styles.reloadInnerCollapsed]}>
+                  <Text style={[styles.reloadIcon, isHighlighted && styles.reloadIconFocused]}>
+                    {status === 'loading' ? '⏳' : '🔄'}
+                  </Text>
+                  {!isCollapsed ? (
+                    <View style={styles.reloadTextWrap}>
+                      <Text
+                        style={[styles.reloadText, isHighlighted && styles.reloadTextFocused]}
+                        numberOfLines={1}
+                      >
+                        {status === 'loading' ? 'กำลังดึงรายการ...' : 'รีโหลดช่อง'}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+              )
+            }}
+          </Pressable>
+        </View>
+
+        {/* แจ้งเตือนกรณีเชื่อมต่อไม่ได้ */}
+        {status === 'error' && !isCollapsed ? (
+          <View style={styles.errorNotice}>
+            <Text style={styles.errorNoticeText} numberOfLines={2}>
+              {error || 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กดปุ่มรีโหลดเพื่อลองใหม่'}
+            </Text>
+          </View>
+        ) : null}
+
         {status === 'loading' && channels.length === 0 ? (
           <View style={styles.skeletons}>
             {[0, 1, 2, 3, 4].map((index) => (
@@ -152,13 +237,16 @@ export function Sidebar({
             <Text style={styles.emptyTitle}>ต่อเซิร์ฟเวอร์ไม่ได้</Text>
             <Text style={styles.emptyText} numberOfLines={2}>{error}</Text>
             <Pressable focusable onPress={() => onRetry?.()} style={styles.retryButton}>
-              {({ focused }) => (
-                <View style={[styles.retryInner, focused && styles.retryInnerFocused]}>
-                  <Text style={[styles.retryText, focused && styles.retryTextFocused]}>
-                    ลองใหม่
-                  </Text>
-                </View>
-              )}
+              {({ focused, hovered }) => {
+                const isHighlighted = Boolean(focused || hovered)
+                return (
+                  <View style={[styles.retryInner, isHighlighted && styles.retryInnerFocused]}>
+                    <Text style={[styles.retryText, isHighlighted && styles.retryTextFocused]}>
+                      ลองใหม่
+                    </Text>
+                  </View>
+                )
+              }}
             </Pressable>
           </View>
         ) : null}
@@ -184,14 +272,16 @@ export function Sidebar({
           removeClippedSubviews={false}
           overScrollMode="never"
           bounces={false}
+          onScroll={() => triggerCh3AutoRenew('sidebar_scroll')}
+          scrollEventThrottle={1500}
           getItemLayout={(_, index) => ({
-            length: 68,
-            offset: 68 * index,
+            length: 70,
+            offset: 70 * index,
             index,
           })}
           onScrollToIndexFailed={({ index }) => {
             listRef.current?.scrollToOffset({
-              offset: 68 * index,
+              offset: 70 * index,
               animated: false,
             })
           }}
@@ -200,7 +290,7 @@ export function Sidebar({
 
       {!isCollapsed ? (
         <View style={styles.footer}>
-          <Text style={styles.hint}>▲ ▼ เลื่อนเพื่อเปลี่ยนช่อง</Text>
+          <Text style={styles.hint}>▲ ▼ เลื่อนดู • กด OK เพื่อเลือกช่อง</Text>
         </View>
       ) : null}
     </Animated.View>
@@ -257,12 +347,109 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '500',
   },
+  subtitleError: {
+    color: '#FF4D6A',
+    fontWeight: '700',
+  },
+  subtitleLoading: {
+    color: '#7C8CFF',
+  },
+  reloadBar: {
+    paddingHorizontal: 8,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  reloadBarCollapsed: {
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    paddingTop: 8,
+    paddingBottom: 6,
+  },
+  reloadBtn: {
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    justifyContent: 'center',
+    cursor: 'pointer',
+  },
+  reloadBtnCollapsed: {
+    width: 46,
+    height: 44,
+    borderRadius: 14,
+    paddingHorizontal: 0,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reloadBtnFocused: {
+    backgroundColor: '#2563EB',
+    borderColor: '#00FFFF',
+    borderWidth: 4,
+    shadowColor: '#00FFFF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 16,
+    elevation: 18,
+  },
+  reloadBtnLoading: {
+    borderColor: '#7C8CFF',
+    backgroundColor: 'rgba(124, 140, 255, 0.15)',
+  },
+  reloadInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  reloadInnerCollapsed: {
+    paddingHorizontal: 0,
+    justifyContent: 'center',
+    gap: 0,
+  },
+  reloadIcon: {
+    fontSize: 15,
+    color: '#A0AEC0',
+  },
+  reloadIconFocused: {
+    color: '#FFFFFF',
+  },
+  reloadTextWrap: {
+    flex: 1,
+  },
+  reloadText: {
+    color: 'rgba(255, 255, 255, 0.85)',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  reloadTextFocused: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+  errorNotice: {
+    marginHorizontal: 8,
+    marginTop: 4,
+    marginBottom: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 77, 106, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 77, 106, 0.3)',
+  },
+  errorNoticeText: {
+    color: '#FF6B81',
+    fontSize: 10,
+    lineHeight: 14,
+    fontWeight: '600',
+  },
   listWrap: {
     flex: 1,
   },
   listContent: {
     paddingHorizontal: 8,
-    paddingTop: 10,
+    paddingTop: 6,
     paddingBottom: 16,
   },
   listContentCollapsed: {
@@ -291,6 +478,7 @@ const styles = StyleSheet.create({
   retryButton: {
     marginTop: 8,
     alignSelf: 'flex-start',
+    cursor: 'pointer',
   },
   retryInner: {
     paddingHorizontal: 12,
@@ -301,8 +489,13 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
   retryInnerFocused: {
-    borderColor: '#FFFFFF',
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderColor: '#00FFFF',
+    borderWidth: 2,
+    backgroundColor: '#2563EB',
+    shadowColor: '#00FFFF',
+    shadowOpacity: 1,
+    shadowRadius: 8,
+    elevation: 8,
   },
   retryText: {
     color: '#FFFFFF',

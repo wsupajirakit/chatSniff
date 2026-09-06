@@ -1,0 +1,105 @@
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+index 8bae522..be8ed87 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
+ import androidx.media3.exoplayer.ExoPlayer
+ import androidx.media3.exoplayer.analytics.AnalyticsListener
+ import androidx.media3.exoplayer.hls.HlsManifest
++import androidx.media3.exoplayer.source.BehindLiveWindowException
+ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+ import androidx.media3.session.MediaSession
+ import androidx.media3.ui.PlayerView
+@@ -331,8 +332,12 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+ 
+     override fun onPlayerErrorChanged(error: PlaybackException?) {
+       error?.let {
+-        resetPlaybackInfo()
+-        setStatus(ERROR, error)
++        if (isLiveStreamRecoveryCandidate(it) && trySilentRecovery(it)) {
++          // Silent recovery in progress, don't emit error to JS
++        } else {
++          resetPlaybackInfo()
++          setStatus(ERROR, error)
++        }
+       } ?: run {
+         setStatus(playerStateToPlayerStatus(player.playbackState), null)
+       }
+@@ -481,6 +486,47 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+     isLive = false
+   }
+ 
++  private var lastSilentRecoveryTimestamp = 0L
++  private var silentRecoveryCount = 0
++
++  private fun isLiveStreamRecoveryCandidate(e: PlaybackException): Boolean {
++    if (e.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW ||
++        e.errorCode == PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE ||
++        e.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS) {
++      return true
++    }
++    var cause: Throwable? = e
++    while (cause != null) {
++      val name = cause.javaClass.simpleName
++      if (name.contains("BehindLiveWindow") ||
++          name.contains("PlaylistReset") ||
++          name.contains("InvalidResponseCodeException")) {
++        return true
++      }
++      cause = cause.cause
++    }
++    return false
++  }
++
++  private fun trySilentRecovery(error: PlaybackException): Boolean {
++    val now = System.currentTimeMillis()
++    if (now - lastSilentRecoveryTimestamp > 15000) {
++      silentRecoveryCount = 0
++    }
++    lastSilentRecoveryTimestamp = now
++    silentRecoveryCount++
++
++    if (silentRecoveryCount <= 3) {
++      android.util.Log.w("ExpoVideo", "Live stream error (${error.errorCode} / ${error.message}), attempting silent recovery #$silentRecoveryCount")
++      player.seekToDefaultPosition()
++      player.prepare()
++      player.play()
++      return true
++    }
++    android.util.Log.w("ExpoVideo", "Silent recovery limit exceeded ($silentRecoveryCount/3), passing error to JS")
++    return false
++  }
++
+   private fun startPlaybackService(): Boolean {
+     if (serviceConnection.playbackServiceBinder?.service != null) {
+       // PlaybackService already running.
+diff --git a/node_modules/expo-video/android/src/main/java/expo/modules/video/records/VideoSource.kt b/node_modules/expo-video/android/src/main/java/expo/modules/video/records/VideoSource.kt
+index b0bfb49..07e8b12 100644
+--- a/node_modules/expo-video/android/src/main/java/expo/modules/video/records/VideoSource.kt
++++ b/node_modules/expo-video/android/src/main/java/expo/modules/video/records/VideoSource.kt
+@@ -56,6 +56,17 @@ class VideoSource(
+       contentType.toMimeTypeString()?.let {
+         setMimeType(it)
+       }
++      // LiveConfiguration เพื่อช่วยให้ ExoPlayer จัดการ live stream ที่มี window สั้นได้ดีขึ้น
++      // เช่น HLS streams ที่มีแค่ 3 chunks (~30 วินาที)
++      setLiveConfiguration(
++        MediaItem.LiveConfiguration.Builder()
++          .setTargetOffsetMs(5000)    // เป้าหมาย: ห่างจาก live edge 5 วินาที
++          .setMinOffsetMs(2000)       // ขั้นต่ำ: ห่าง 2 วินาที
++          .setMaxOffsetMs(12000)      // สูงสุด: ห่าง 12 วินาที (ไม่ไปชนท้าย window)
++          .setMinPlaybackSpeed(0.97f) // ชะลอเล็กน้อยถ้าอยู่ใกล้ live edge เกินไป
++          .setMaxPlaybackSpeed(1.04f) // เร่งเล็กน้อยถ้าอยู่หลัง live edge
++          .build()
++      )
+       drm?.let {
+         if (it.type.isSupported()) {
+           setDrmConfiguration(it.toDRMConfiguration())
+@@ -77,6 +88,7 @@ class VideoSource(
+     }
+     .build()
+ 
++
+   // Using `resolveAssetSource` to generate a local asset URI returns a resource name for android release builds
+   // we have to get the raw resource URI to play the video
+   @SuppressLint("DiscouragedApi") // AFAIK, in this case, there's no other way to get the resource URI

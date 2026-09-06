@@ -31,19 +31,61 @@ async function request(path, options = {}) {
 }
 
 /** ดึงเฉพาะช่องที่เปิดใช้งาน เรียงตาม order ที่ตั้งไว้หลังบ้าน */
-export async function fetchChannels() {
-  const data = await request('/api/channels?enabled=true')
+export async function fetchChannels(cacheBust = false) {
+  const qs = cacheBust ? `?enabled=true&_t=${Date.now()}` : '?enabled=true'
+  const data = await request(`/api/channels${qs}`)
+  const channels = Array.isArray(data.channels) ? [...data.channels] : []
+
+  // แค่ตอน response server: ให้ช่อง 3 เป็นลำดับที่ 3 (index 2)
+  const ch3Idx = channels.findIndex(
+    (ch) =>
+      ch?.id === '834500c3-7a3e-4d58-a7df-6d0c981fb111' ||
+      ch?.id === 'd100002d-bc97-4852-abfa-f80224804a8f' ||
+      /^(3\s*hd|ช่อง\s*3|ch\s*3|channel\s*3)($|\s)/i.test(String(ch?.name || '').trim())
+  )
+  if (ch3Idx !== -1 && channels.length >= 3) {
+    const [ch3] = channels.splice(ch3Idx, 1)
+    channels.splice(2, 0, ch3)
+  }
+
   return {
     updatedAt: data.updatedAt,
-    channels: Array.isArray(data.channels) ? data.channels : [],
+    channels,
   }
 }
 
 /** ดึงข้อมูลช่องเดี่ยวแบบสดๆ ใช้เมื่อต้องการ refresh ลิงก์ที่อาจหมดอายุ */
-export async function fetchChannel(id) {
+export async function fetchChannel(id, { refresh = false } = {}) {
   if (!id) return null
-  return await request(`/api/channels/${id}`)
+  const qs = refresh ? `?refresh=true&_t=${Date.now()}` : `?_t=${Date.now()}`
+  return await request(`/api/channels/${id}${qs}`)
 }
+
+/** บังคับต่ออายุ Token สตรีมของช่องผ่าน Backend ทันที */
+export async function refreshChannel(id) {
+  if (!id) return null
+  try {
+    const res = await request(`/api/channels/${id}/refresh`, { method: 'POST' })
+    return res?.channel || res
+  } catch {
+    // ถ้า endpoint refresh ตอบ error ให้ fallback ไปดึงแบบปกติพร้อม flag refresh
+    return await fetchChannel(id, { refresh: true })
+  }
+}
+
+/** ส่ง URL สดที่ resolve สำเร็จไปอัปเดตบน Backend */
+export async function syncChannelUrl(id, url) {
+  if (!id || !url) return
+  try {
+    await request(`/api/channels/${id}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+    })
+  } catch {}
+}
+
+
 
 /**
  * เช็คว่ารายการช่องเปลี่ยนไปหรือยัง — ตัวนี้เบามาก เรียกถี่ได้

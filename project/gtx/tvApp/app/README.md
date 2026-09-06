@@ -162,6 +162,10 @@ cd android
 | **9** | **ลิงก์ช่อง 3 ช้ามาก บัฟเฟอร์กระตุก ภาพแตก 576p** | ลิงก์เดิมส่งจาก US (`live-us1.thaimomo.com`) Latency สูง 646ms และหน้าต่างสตรีมสั้นแค่ 3 chunks | เปลี่ยนมาใช้ ByteArk CDN กรุงเทพฯ 1080p (Latency 80-110ms เร็วขึ้น 6 เท่า, หน้าต่างสตรีม 15 นาที) พร้อมระบบ `streamResolver.js` ดึง Fresh Token อัตโนมัติ |
 | **10** | **ช่อง 3 ดับซ้ำซาก / ต่ออายุอัตโนมัติไม่ทำงานจริง** | 1) AWS WAF บล็อก Cloud IP Backend (HTTP 403 Forbidden) ทำให้ต่ออายุบน Cloud ไม่ได้<br>2) Token ใน DB หมดอายุค้างข้ามคืน ทีวีได้ลิงก์ตาย HTTP 410<br>3) TV Player เกิด Deadlock ดึง URL เดิมจาก backend มาทับ state<br>4) Client Resolver เดิม regex โลภ 250KB + timeout สั้น 4s | สถาปัตยกรรม Fail-Safe 4 ชั้น:<br>1) Backend API `POST /api/channels/:id/sync` รับ token สดจากภายนอก<br>2) Fast String Slicing Client Resolver (0.01ms, 12s timeout) + auto-sync<br>3) ปลด Deadlock ใน Player ไม่เอา URL เก่ามาทับ + Auto-fallback ไป Mirror สำรอง (`live-us1.thaimomo.com`) ภาพไม่มีวันดับ<br>4) Local Sync Daemon บน Mac (`sync_ch3.js`)<br>*(อ่านตัวเต็มใน [current_session.md](../current_session.md#11-วิเคราะห์สาเหตุเชิงลึกและแก้ไขระบบต่ออายุช่อง-3-hd-ล้มเหลว-06092026))* |
 | **11** | **สลับช่องแล้วจอดำสนิทรอ 2-3 วิ / ไม่มีจอโหลดบอกว่ากำลังเปิดช่องอะไร** | 1) `useState(!isMain)` ใน Player ไม่รีเซ็ตตอน prop `channel` เปลี่ยน ทำให้ state `loading` ค้างเป็น `false`<br>2) ExoPlayer ยิงอีเวนต์ `readyToPlay` ตั้งแต่ตอนโหลด manifest เสร็จ แต่ตัวถอดรหัสยังไม่ได้วาดเฟรมภาพแรก (ต้องรอ 1.5-3 วิ) โค้ดเดิมสั่งปิด loading ทันทีใน `readyToPlay` ทำให้จอดำสนิท | 1) ปรับ Player ใช้ Synchronous Render Trigger สั่ง `setLoading(true)` ใน 0ms เมื่อเปลี่ยนช่อง<br>2) ย้ายการปิดจอโหลดไปรอที่ `timeUpdate` จนกว่า `currentTime > 0` และเวลาเริ่มเดินหน้าจริง<br>3) ออกแบบ `LoadingOverlay` ระดับภาพยนตร์: วงแหวนหมุน 3 ชั้น 340px, โลโก้ช่อง 140px, ป้าย `🔴 สตรีมสด LIVE • HD`, ชื่อช่องใหญ่ 46px, Shimmer Beam, และ Fade Out นุ่มนวล 380ms |
+| **12** | **ป้ายชื่อช่องมุมขวาบน (Badge) ค้างตลอดเวลาไม่ยอมซ่อน** | อีเวนต์ `timeUpdate` ใน `Player.js` ทำงานส่งสัญญาณทุก 1 วินาที และเรียก `onPlayStateChange(true)` ในทุกวินาที ส่งผลให้ `badgeTimer` ถูก Reset ใหม่ตลอดเวลา | ใช้ `initialPlayFiredRef` ดักจับเฉพาะตอนเริ่มเล่นครั้งแรก ไม่ให้ `timeUpdate` ไปยิง `onPlayStateChange(true)` ซ้ำ ป้ายนับถอยหลัง 3.5 วินาทีแล้วสลายตัวถูกต้อง 100% |
+| **13** | **ช่อง 3 / One 31 / Amarin TV 34 ได้ภาพเดียวกันหมด และลิงก์ช่องอื่นถูกทับ** | 1) `isCh3()` และ `isDynamicChannel()` ใช้ `.includes('3')` ซึ่งช่อง One **31**, Amarin **34** มีเลข 3 อยู่ในชื่อ<br>2) แอปเข้าใจผิด ดึง Token ช่อง 3 แล้วยิง Sync ไปยังเซิร์ฟเวอร์<br>3) เซิร์ฟเวอร์เดิมไม่มี Guard เขียนทับสตรีมจริงในฐานข้อมูล | 1) กู้คืน URL เดิมของช่อง One 31 และ Amarin TV 34 บนเซิร์ฟเวอร์สด<br>2) ใช้ Strict Regex `/^(3\s*hd|ช่อง\s*3|ch\s*3|channel\s*3)($|\s)/i` ทั่วทั้งระบบ<br>3) Backend Guard ปฏิเสธด้วย `403 Forbidden` หากพยายาม Sync ไปยังช่องอื่นที่ไม่ใช่ช่อง 3 |
+| **14** | **ดูช่องอยู่แล้วมีหน้าจอโหลดดิ้งหมุนๆ โผล่ขึ้นมาขัดจังหวะเป็นระยะ** | 1) Polling ลูป 8 วินาทีใน `useChannels.js` สั่ง `forceRefresh: true` ทำให้ขอ Token ใหม่และยิง Sync ตลอดเวลาจนเซิร์ฟเวอร์อัปเดต `updatedAt` เกิด Infinite Sync Loop<br>2) เมื่อ URL ใหม่ส่งกลับมา `Player.js` ตรวจพบ `urlChanged` แล้วสั่ง `setLoading(true)` และ `player.replace()` ทำลาย Session ที่กำลังเล่นปกติทิ้ง | 1) Silent Token Update ใน Player: หากกำลังดูช่องเดิมอยู่และวิดีโอกำลังเล่นราบรื่น (`hasStartedPlayingRef.current`) ห้ามขัดจังหวะการดูเด็ดขาด ให้อัปเดต `currentUrlRef.current` เงียบๆ ในหน่วยความจำ ไม่เรียก `player.replace()` และไม่เปิด Loading<br>2) เปลี่ยน `forceRefresh: isManual` ใน `useChannels.js` ตัดวงจร Infinite Sync Loop 100% |
+| **15** | **เลื่อนดูช่องแล้วแอปชิงสลับช่องอัตโนมัติ / สีไฮไลต์ช่องเดิมมองยากไม่เด่น** | 1) `handleFocusChannel` ใน `App.js` มี `switchTimer = 450ms` ชิงสลับช่องอัตโนมัติเมื่อเลื่อนหยุดดู<br>2) สไตล์โฟกัสเดิมเป็นสีขาวขุ่นจางๆ (`rgba(255,255,255,0.24)`) กลืนกับพื้นหลัง มองยากจากระยะไกล 3 เมตร | 1) ลบ `switchTimer` ออกถาวร การเลื่อนดูช่องจะไม่สลับช่องเด็ดขาด สตรีมปัจจุบันเล่นต่อเนื่อง ต้องกดปุ่มตรงกลางรีโมต (OK/Select) เท่านั้นถึงจะเลือกช่อง<br>2) อัปเกรด Focus Highlight นีออนเด่นชัด: พื้นหลัง Royal Sapphire Blue (`rgba(29, 78, 216, 0.92)`), ขอบฟ้านีออน Electric Cyan (`#00F0FF`, 2.5px), แท่งไฟนีออนด้านซ้าย, และเงาเรืองแสงนีออน 12px |
 
 
 ---
@@ -319,8 +323,76 @@ cd android
   - **Client ID Guard**: ในฟังก์ชัน `renewCh3Auto` จะไม่ยิงซิงค์หาก ID ไม่ตรงกับช่อง 3
 * **เอกสารและบันทึกฉบับเต็ม**: อ่านรายละเอียดเชิงลึกและหลักฐาน Log ได้ที่ 👉 [**`../current_session.md` (หัวข้อ 15)**](../current_session.md#15-ตรวจสอบและแก้ไขช่อง-3--one-31--amarin-tv-34-ได้ภาพเดียวกันหมด-และ-badge-ค้าง-06092026-1658-น)
 
+#### 14. ดูช่องอยู่แล้วมีหน้าจอโหลดดิ้งหมุนๆ โผล่ขึ้นมาขัดจังหวะเป็นระยะ (Stream Interruption during Healthy Playback due to Background Token Sync Loop)
+* **ภาษาคน**: กำลังนั่งดูช่อง 3 หรือช่องอื่นๆ สตรีมกำลังเล่นได้ดีคมชัด เน็ตไม่ได้หลุด แต่จู่ๆ ก็มีวงแหวนโหลดดิ้งหมุนๆ โผล่ขึ้นมากลางจอ แล้ววิดีโอก็รีสตาร์ทเริ่มเล่นใหม่เอง ขัดจังหวะการรับชมเป็นระยะ
+* **สาเหตุจริงเชิงลึกจากการตรวจ Log เซิร์ฟเวอร์และตัวเล่น (100% Forensic Evidence)**:
+  1. **Background Polling Infinite Sync Loop**: ตัวแอปใน `useChannels.js` มีการ Poll ตรวจสอบ `fetchUpdatedAt` ทุก 8 วินาที ซึ่งโค้ดเดิมสั่ง `resolveStreamUrl(c, { forceRefresh: true })` ส่งผลให้มีการขอ Fresh Token จาก ByteArk ทุก 8 วินาที แล้วยิง `POST /api/channels/:id/sync` ขึ้นเซิร์ฟเวอร์ทุกรอบ
+  2. เซิร์ฟเวอร์อัปเดตข้อมูลช่อง ทำให้ `updatedAt` บนเซิร์ฟเวอร์เปลี่ยนใหม่ตลอดเวลา กลายเป็น Feedback Loop สั่งดึงช่องและซิงค์ใหม่ไม่รู้จบ
+  3. **Player ทำลาย Session วิดีโอที่กำลังเล่นดีอยู่ (`urlChanged` Triggering `player.replace`)**:
+     ใน `Player.js` เดิม เมื่อได้รับ Prop `url` ใหม่ที่มี Token สดส่งลงมา มีเงื่อนไข `if (urlChanged || forceReloadRequested)` ซึ่งสั่ง `setLoading(true)` และสั่ง `player.replace({ uri: url })` ทันที แม้ว่าสตรีมเดิมจะกำลังเล่นได้อย่างราบรื่นและต่อเนื่อง
+     การเรียก `player.replace()` บน ExoPlayer จะทำลาย MediaItem และบัฟเฟอร์ในแรมทิ้งทั้งหมด ทำให้สตรีมสะดุดและเกิดหน้าจอโหลดดิ้งหมุนๆ โผล่ขึ้นมาขัดจังหวะกลางคัน
+* **วิธีแก้จบปัญหาอย่างถาวร (Industry Streaming Player Best Practice)**:
+  - **Uninterrupted Healthy Playback & Silent Token Update (`Player.js`)**:
+    - เพิ่ม `currentPlayingChannelIdRef` ระบุช่องที่กำลังเล่นอยู่
+    - หากกำลังดูช่องเดิมอยู่ (`!channelChanged && !forceReloadRequested`) และวิดีโอกำลังเล่นได้อย่างราบรื่น (`hasStartedPlayingRef.current === true`), **ไม่อนุญาตให้ขึ้นหน้าจอโหลดดิ้งและห้ามสั่ง `player.replace()` ขัดจังหวะเด็ดขาด**
+    - ให้อัปเดต URL ใหม่เก็บไว้ใน `currentUrlRef.current = url` เงียบๆ ในหน่วยความจำ (Silent Ref Update) เพื่อเตรียมไว้เป็น URL สำรองสำหรับการ Reconnect หากเกิด Network Error ในอนาคต
+    - อนุญาตให้สั่ง `setLoading(true)` และ `player.replace()` เฉพาะเมื่อผู้ใช้กดสลับช่องจริง (`channelChanged === true`) หรือกดปุ่มรีโหลดช่องด้วยตนเอง (`forceReloadRequested === true`) เท่านั้น
+  - **Idempotent Background Polling (`useChannels.js`)**:
+    - เปลี่ยน `forceRefresh: true` เป็น `forceRefresh: isManual`
+    - การ Polling เบื้องหลังทุก 8 วินาทีจะไม่ขอ Token ใหม่ตราบใดที่ Token เดิมยังไม่หมดอายุ (`isUrlExpiring(c.url, 600)` มีอายุเหลือ > 10 นาที)
+    - กำจัด Infinite Sync Loop ระหว่าง Client และเซิร์ฟเวอร์ให้เป็นศูนย์ 100%
+* **เอกสารและบันทึกฉบับเต็ม**: อ่านรายละเอียดเชิงลึกและหลักฐาน Log ได้ที่ 👉 [**`../current_session.md` (หัวข้อ 16)**](../current_session.md#16-แก้ไขหน้าจอโหลดดิ้งหมุนขัดจังหวะการดูช่อง-3-ระหว่างเล่นปกติ-uninterrupted-healthy-playback--silent-token-update-06092026-1820-น)
 
+#### 15. เลื่อนดูช่องแล้วแอปชิงสลับช่องอัตโนมัติ / สีไฮไลต์ช่องเดิมมองยากไม่เด่น (Explicit Remote OK/Center Selection & Ultra-Vivid Neon Focus Highlight)
+* **ภาษาคน**: 1) ตอนกดรีโมตขึ้น-ลงแค่จะเลื่อนดูชื่อช่องเฉยๆ พอหยุดดูแป๊บเดียว แอปดันชิงตัดสลับไปเล่นช่องนั้นเอง ทั้งที่ยังไม่ได้ตัดสินใจเลือก 2) สีแถบไฮไลต์ที่เลื่อนไปโดนเป็นสีขาวขุ่นจางๆ กลืนไปกับพื้นหลัง ดูจากระยะ 3 เมตรบนโซฟามองแทบไม่ออกว่ากำลังเลือกช่องไหนอยู่
+* **สาเหตุจริงเชิงลึก**:
+  1. **Auto-Switch on Focus (450ms Delay)**: ใน `App.js` ฟังก์ชัน `handleFocusChannel` เดิมมีการตั้งเวลา `switchTimer.current = setTimeout(() => commit(channel), 450)` ไว้ ทำให้เมื่อใดก็ตามที่เลื่อนไฮไลต์ไปหยุดที่ช่องใดเกิน 450ms ตัวแอปจะสั่งเล่นช่องนั้นทันที
+  2. **Subtle Washed-out Highlight**: ใน `ChannelRow.js` โค้ดเดิมใช้ `backgroundColor: 'rgba(255, 255, 255, 0.24)'` และ `borderColor: '#FFFFFF'` หนาเพียง 1.5px ซึ่งเป็นสีโมโนโครมขาวขุ่น กลืนไปกับพื้นหลังสีดำของแถบ Sidebar ขาด Chromatic Contrast บนจอทีวีขนาดใหญ่
+* **วิธีแก้จบปัญหาอย่างถาวร (Leanback TV Standard UX)**:
+  - **No Auto-Switch on Scroll (ห้ามเปลี่ยนช่องตอนเลื่อน)**: ลบ `switchTimer` และคำสั่ง `commit(channel)` ออกจาก `handleFocusChannel` ใน `App.js` อย่างเด็ดขาด การกดรีโมตขึ้น-ลงจะเป็นเพียงการเลื่อนดูชื่อช่องเท่านั้น ช่องที่กำลังเล่นอยู่จะไม่มีวันสะดุดหรือถูกเปลี่ยน
+  - **Explicit OK/Center Confirmation (ต้องกดปุ่มตรงกลางถึงจะเลือกช่อง)**: ผูกการสลับช่องไว้ที่การกดปุ่มตรงกลางรีโมต (`DPAD_CENTER` / Enter) ซึ่งจะไปยิงอีเวนต์ `onPress` -> `handleSelectChannel` -> `commit(channel)` เล่นทันทีใน 0ms และนับถอยหลังย่อ Sidebar ให้ดูเต็มจอหลังเลือกเสร็จ
+  - **Ultra-Vivid Neon Focus Highlight (ไฮไลต์นีออนเด่นชัดระดับพรีเมียม)**:
+    - **พื้นหลัง:** สีน้ำเงินเข้มข้น `rgba(29, 78, 216, 0.92)` (Royal Sapphire Blue) ตัดกับพื้นหลัง Sidebar ชัดเจน
+    - **ขอบนีออน:** สีฟ้านีออน Electric Cyan (`#00F0FF`) หนา 2.5px ชัดเจนสะดุดตา
+    - **แท่งไฟนีออนนำสายตา:** เพิ่มแถบนีออนสีฟ้ากว้าง 4px ที่ขอบซ้าย (`focusPill`) ระบุตำแหน่งเคอร์เซอร์ได้ทันทีแม้กวาดตามองผ่านๆ
+    - **ออร่าเรืองแสง:** เงาสีนีออน `shadowColor: '#00F0FF'`, `shadowOpacity: 0.95`, `shadowRadius: 10`, `elevation: 12`
+    - **กรอบ Avatar:** เพิ่มกรอบเรืองแสงสีขาวรอบโลโก้ช่องเมื่อโฟกัส
+    - **ตัวหนังสือหนาพิเศษ:** ชื่อช่องสีขาวหนา `fontWeight: '900'` ขนาด 14px และชื่อหมวดหมู่สีฟ้าสว่าง `#BAE6FD`
+    - **ปุ่มรีโหลดช่อง:** อัปเกรดไฮไลต์ของปุ่ม `[ 🔄 รีโหลดช่อง ]` ด้านบนให้เป็นโทนนีออน `#00F0FF` แบบเดียวกัน
+* **เอกสารและบันทึกฉบับเต็ม**: อ่านรายละเอียดเชิงลึกได้ที่ 👉 [**`../current_session.md` (หัวข้อ 17)**](../current_session.md#17-ปรับปรุงระบบการเลือกช่องด้วยรีโมต-explicit-remote-okcenter-selection--ultra-vivid-neon-focus-highlight-06092026-1852-น)
 
+#### 16. ขยายเลขช่องในแถบซ้ายใหญ่ขึ้น +25% ถึง +35% และยกระดับไฮไลต์โฟกัสนีออนสว่างจ้าสะใจ (Ultra-Enlarged Channel Numbers & Maximum Neon Pop Highlight)
+* **ภาษาคน**: 1) ผู้ใช้ต้องการให้ตัวเลขช่องในแถบซ้าย (Sidebar) ใหญ่ขึ้นอีก +25% เพื่อให้อ่านหมายเลขช่องได้ชัดเจนสะใจจากระยะไกลบนโซฟา 2) ไฮไลต์โฟกัสของแถบเลือกช่องต้องสว่าง ชัดเจน และโดดเด่นสะดุดตาขั้นสุด ไม่มีทางกลืนไปกับพื้นหลังทีวี
+* **สาเหตุจริงเชิงลึก**:
+  1. **Previous Subdued Number Sizing**: ใน `Avatar.js` ตัวอักษรดึงเพียงตัวอักษรแรก `name[0]` (กลายเป็นภาษาไทย/อังกฤษเช่น ไ, O, A, W แทนที่จะเป็นเลขช่อง) และฟอนต์ขนาด 22-23px (`size * 0.48`) ซึ่งเล็กเกินไปเมื่อมองจากระยะ 3 เมตร
+  2. **Subdued Focus Contrast**: สีน้ำเงินเดิมที่มีความโปร่งใส `rgba(29, 78, 216, 0.92)` บนจอทีวีบางรุ่นที่มีคอนทราสต์ต่ำอาจดูกลืนไปกับพื้นหลังสีดำเข้ม
+* **วิธีแก้จบปัญหาอย่างถาวร (Leanback TV Standard UX)**:
+  - **ดึงหมายเลขช่องดิจิทัลทีวีจริง 100% (`Avatar.js`)**: ใช้ Regex `name.match(/\d+/)` ดึงตัวเลขช่องออกมาแสดงชัดเจนตรงตามมาตรฐาน กสทช. เช่น 3, 5, 7, 9, 23, 24, 25, 29, 31, 32, 34
+  - **ขยายขนาดตัวเลขช่องใหญ่ขึ้น +25% ถึง +35%**:
+    - ขยายกล่อง Avatar จาก 46px เป็น **52px**
+    - เลข 1 หลัก: ขยายฟอนต์เป็น **36px** (`size * 0.70`, `lineHeight: 41px`)
+    - เลข 2 หลัก: ขยายฟอนต์เป็น **30px** (`size * 0.58`, `lineHeight: 34px`, `letterSpacing: -1`) ใหญ่สะใจ ชัดทะลุจอ
+  - **ยกระดับไฮไลต์โฟกัสขั้นสุด (Maximum Neon Pop)**:
+    - **พื้นหลัง:** สีน้ำเงินสดใสทึบแสง 100% `#2563EB` (Vivid Electric Royal Blue) สว่างเด่น ตัดกับพื้นหลังสีดำของแถบ Sidebar
+    - **ขอบนีออน:** สีฟ้านีออน Electric Cyan (`#00FFFF`) หนาพิเศษ **3.5px** พร้อมออร่าเรืองแสง `shadowColor: '#00FFFF'`, `shadowRadius: 16`, `elevation: 18`
+    - **เสานีออนนำสายตา:** ขยายเสานีออนซ้ายมือ (`focusPill`) กว้าง **6px** สว่างสะดุดตา
+    - **กรอบเรืองแสงรอบตัวเลขช่อง:** กรอบ Avatar โฟกัสเรืองแสงสีฟ้านีออน `#00FFFF` หนา 2.5px
+    - **ชื่อช่องคมชัด:** ตัวหนังสือสีขาวบริสุทธิ์หนาพิเศษ `fontWeight: '900'` ขนาด **18px** (+28.5%) พร้อม Text Shadow ชัดเจน
+    - **ขยายความกว้างแถบด้านซ้าย:** `EXPANDED_WIDTH = 235` (เพิ่มจาก 220) และ `COLLAPSED_WIDTH = 74` รองรับตัวเลขช่องขนาดใหญ่ 52px และข้อความชื่อช่องได้ไม่อึดอัด
+    - **ข้อความแนะนำรีโมต:** แสดง `▲ ▼ เลื่อนดู • กด OK เพื่อเลือกช่อง` ที่ด้านล่างของแถบซ้าย
 
-
+#### 17. รองรับการ Hover ผ่านเมาส์/Air Mouse พร้อมไฮไลต์นีออนสีสดเด่นชัดขั้นสุด (Full Mouse & Air Mouse Hover Support with Vivid Standout Neon Highlight)
+* **ภาษาคน**: เมื่อใช้เมาส์ หรือรีโมตแบบมี Pointer (Air Mouse / Magic Remote) เลื่อนเคอร์เซอร์ไปชี้ (Hover) ที่รายการช่อง ไฮไลต์ต้องติดสว่างขึ้นมาทันทีอย่างเด่นชัด สีสด คมชัด ไม่ต้องคลิกก่อน และเห็นชัดเจนทะลุจอ
+* **สาเหตุจริงเชิงลึก**:
+  1. **Only Listened to `focused`**: ใน `ChannelRow.js` และ `Sidebar.js` เดิม Component `<Pressable>` รับเฉพาะพารามิเตอร์ `focused` จาก D-pad รีโมตทีวีเท่านั้น ไม่ได้ดักจับ `hovered` หรืออีเวนต์ `onHoverIn` / `onHoverOut` ส่งผลให้เมื่อนำเมาส์หรือ Air Mouse ไปชี้ (Hover) ตัวแถวช่องไม่มีการเปลี่ยนแปลงสถานะหรือแสดงไฮไลต์ใดๆ เลย
+* **วิธีแก้จบปัญหาอย่างถาวร**:
+  - **Full Dual-State Highlight (`isHighlighted = focused || hovered || isHovered`)**: รวมสถานะทั้งจากการกดรีโมต D-pad (`focused`), การตรวจจับของ Pressable (`hovered`), และ Local State จากอีเวนต์ `onHoverIn` / `onHoverOut` ทำงานสอดประสานกัน 100%
+  - **Auto-Expand on Hover (`onHoverIn`)**: เมื่อเลื่อนเมาส์ไปชี้ช่องใด จะสั่งกาง Sidebar ออกมาแสดงชื่อช่องอัตโนมัติทันที
+  - **Ultra-Vivid Standout Neon Highlight (หนา 4px + นีออน Electric Cyan `#00FFFF` + Vivid Royal Blue `#2563EB`)**:
+    - ขอบนีออนหนาขึ้นเป็น **4px** เต็มตา
+    - เสานีออนนำสายตาซ้ายมือ (`focusPill`) กว้าง **7px**
+    - กรอบตัวเลขช่อง Avatar หนา **3px** พร้อมออร่าเรืองแสง
+    - ตัวหนังสือชื่อช่องขนาด **18px** หนา `900` สีขาวตัดกับพื้นหลังสีน้ำเงินสด
+    - เพิ่ม `cursor: 'pointer'` สำหรับการควบคุมด้วยเมาส์
+    - ปุ่มรีโหลดช่องและปุ่มลองใหม่รองรับการ Hover ด้วยสีนีออนเต็มรูปแบบเช่นกัน
 
