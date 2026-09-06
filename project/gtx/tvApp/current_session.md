@@ -794,8 +794,197 @@ ExoPlayer พ่น Error `Response code: 410 (Gone)` เนื่องจา�
    - `./gradlew assembleRelease --no-daemon`: **`BUILD SUCCESSFUL in 22s`** (260 actionable tasks)
    - ไฟล์ APK ล่าสุด: [**`tvApp.apk`**](tvApp.apk) (ขนาด ~43 MB, Timestamp `06/09/2026 17:43 น.`)
 
+---
 
+## 16. แก้ไขหน้าจอโหลดดิ้งหมุนขัดจังหวะการดูช่อง 3 ระหว่างเล่นปกติ (Uninterrupted Healthy Playback & Silent Token Update) [06/09/2026 18:20 น.]
 
+### 16.1 อาการที่พบ (Observed Symptom)
+* ผู้ใช้เปิดรับชมช่อง 3 HD หรือช่องรายการสด สตรีมกำลังเล่นได้ราบรื่น คมชัดระดับ 1080p สัญญาณอินเทอร์เน็ตปกติ ไม่มีการสะดุด แต่ปรากฏว่าระหว่างเล่นต่อเนื่อง จู่ๆ มีหน้าจอโหลดดิ้งวงแหวนหมุนๆ (`LoadingOverlay`) โผล่ขึ้นมาขัดจังหวะเป็นระยะๆ แล้ววิดีโอก็รีสตาร์ทเริ่มเล่นใหม่เอง
 
+---
 
+### 16.2 การตรวจสอบ Log เชิงลึกและหลักฐานพิสูจน์สาเหตุแท้จริง (Forensic Evidence & Root Cause Analysis)
 
+จากการตรวจสอบการทำงานและ Log ของระบบร่วมกันระหว่าง Client และ Backend พบสาเหตุรากเหง้า 2 ส่วนที่ส่งผลกระทบต่อเนื่องกันเป็นลูกโซ่:
+
+1. **Background Polling Loop ที่สร้าง Infinite Sync Loop ระหว่าง Client กับ Server:**
+   - ใน `app/src/lib/useChannels.js` มีการ Poll ตรวจสอบ `fetchUpdatedAt` ทุกๆ 8 วินาที เพื่อดูว่ารายการช่องบน Backend มีการเปลี่ยนแปลงหรือไม่
+   - เมื่อมีการดึงช่อง โค้ดเดิมสั่ง:
+     ```javascript
+     const resolvedUrl = await resolveStreamUrl(c, {
+       forceRefresh: true, // ⚠️ บังคับให้แกะ Token ใหม่ทุก 8 วินาที
+       trigger: isManual ? 'getlist_manual' : 'getlist_fetch',
+     })
+     ```
+   - การส่ง `forceRefresh: true` ทำให้ `streamResolver.js` ไปแกะ Fresh Token ใหม่จาก ByteArk ทุกรอบ แม้ว่า Token เดิมจะยังมีอายุใช้งานได้อีก 6-12 ชั่วโมง
+   - เมื่อได้ Token ใหม่ ตัวแอปจะยิง `POST /api/channels/:id/sync` ไปยัง Backend
+   - ฝั่ง Backend เมื่อได้รับ URL ใหม่ จึงอัปเดตช่องและเปลี่ยนค่า `updatedAt` ในฐานข้อมูล
+   - ผลลัพธ์คือ เมื่อถึงรอบ Polling 8 วินาทีถัดไป แอปตรวจพบว่า `updatedAt` เปลี่ยน จึงสั่งดึงช่องใหม่และยิง Token ใหม่อีกครั้ง เกิดเป็น **Infinite Sync Loop ทุกๆ 8 วินาที** อย่างต่อเนื่อง
+
+2. **Player ทำลาย Session ขณะที่วิดีโอกำลังเล่นปกติ (`urlChanged` Triggering `player.replace`):**
+   - เมื่อ Background Polling ได้ URL ช่องใหม่ที่มี Token สดส่งลงมาเป็น Prop `url` ให้กับคอมโพเนนต์ `Player.js`
+   - ภายใน `useEffect` ของ `Player.js` มีโค้ดเดิมดังนี้:
+     ```javascript
+     const urlChanged = currentUrlRef.current !== url
+     const forceReloadRequested = currentEpochRef.current !== loadEpoch
+
+     // สั่ง replace สตรีมเมื่อ URL เปลี่ยน หรือเมื่อสั่ง reload
+     if (urlChanged || forceReloadRequested) {
+       setLoading(true)
+       setError(null)
+       try {
+         player.replace({ uri: url })
+         player.play()
+       } catch (e) { ... }
+     }
+     ```
+   - เมื่อ `urlChanged` เป็นจริง (`true`) โค้ดจะสั่ง `setLoading(true)` และเรียก `player.replace({ uri: url })` ทันที โดยไม่ได้คำนึงว่าผู้ใช้กำลังดูช่องเดิมอยู่และวิดีโอกำลังเล่นได้อย่างราบรื่น
+   - บน ExoPlayer / Android Media3 การสั่ง `player.replace()` จะทำการทำลาย `MediaItem` ตัวถอดรหัส และบัฟเฟอร์ในแรมเดิมทิ้งทั้งหมด แล้วเริ่มกระบวนการดาวน์โหลด Manifest และต่อ Network Socket ใหม่ ส่งผลให้หน้าจอหมุนโหลดดิ้ง (`LoadingOverlay`) โผล่ขึ้นมาขัดจังหวะสายตาผู้ใช้กลางคัน
+
+---
+
+### 16.3 แนวทางแก้ไขเชิงสถาปัตยกรรม (Industry Media Streaming Best Practice)
+
+ตามมาตรฐานสากลของระบบ Media Player (เช่น YouTube, Netflix, HLS/DASH Streaming Engines):
+1. **Uninterrupted Healthy Playback Rule:**
+   - ขณะที่สตรีมกำลังเล่นได้อย่างต่อเนื่องและปกติ (`hasStartedPlayingRef.current === true`) การอัปเดต Metadata หรือ Security Token ใน Background จะต้อง **ไม่มีวันขัดจังหวะการรับชมของผู้ใช้เด็ดขาด** (Zero Playback Disruption)
+   - การสั่งเปลี่ยนสตรีม (`player.replace()`) และการเปิดหน้าจอโหลด (`setLoading(true)`) จะต้องเกิดขึ้นเฉพาะเมื่อ:
+     1. ผู้ใช้กดเปลี่ยนช่องจริง (`channelChanged === true`)
+     2. ผู้ใช้กดปุ่มรีโหลดช่องด้วยตนเอง (`forceReloadRequested === true`)
+     3. เกิด Fatal Network Error หรือ Stream Deadlock แล้วระบบ Reconnect อัตโนมัติเท่านั้น
+2. **Silent Background Token Refresh:**
+   - หาก Background ได้รับ Token URL ใหม่มา ให้อัปเดตค่าไว้ใน `currentUrlRef.current = url` เงียบๆ ในหน่วยความจำ เพื่อเตรียมไว้ใช้ในกรณีที่ต้อง Reconnect ในอนาคต
+3. **Idempotent Background Polling:**
+   - การตรวจสอบช่องใน Background Polling ต้องไม่มีผลข้างเคียง (Side-effect free) โดยเปลี่ยน `forceRefresh: isManual` และให้ดึง Token ใหม่เฉพาะกรณีที่ Token กำลังจะหมดอายุจริงภายใน 10 นาที (`isUrlExpiring(c.url, 600)`) เท่านั้น
+
+---
+
+### 16.4 รายละเอียดการแก้ไขโค้ดจริง (Code Changes)
+
+1. **`app/src/components/Player.js` (Silent URL Update for Active Stream):**
+   ```javascript
+   const channelChanged = currentPlayingChannelIdRef.current !== channel?.id
+   const urlChanged = currentUrlRef.current !== url
+   const forceReloadRequested = currentEpochRef.current !== loadEpoch
+
+   // ถ้าไม่มีอะไรเปลี่ยนเลย ปล่อยให้เล่นต่อเนื่อง
+   if (!channelChanged && !urlChanged && !forceReloadRequested) return
+
+   // Best Practice: หากกำลังดูช่องเดิมอยู่ และสตรีมกำลังเล่นได้อย่างราบรื่น (Healthy Playback)
+   // การที่ URL มีการต่ออายุ Token ใหม่ใน Background จะต้องไม่ขัดจังหวะการดูของผู้ใช้
+   // ให้อัปเดต URL ใหม่ไว้ใน Ref เงียบๆ เพื่อใช้กรณีเกิด Network Error ในอนาคต
+   if (!channelChanged && !forceReloadRequested && hasStartedPlayingRef.current) {
+     currentUrlRef.current = url
+     return
+   }
+   ```
+   - เพิ่ม `currentPlayingChannelIdRef` เพื่อแยกความแตกต่างระหว่างการ "สลับช่องใหม่" กับการ "อัปเดต Token ของช่องเดิม"
+
+2. **`app/src/lib/useChannels.js` (Idempotent Polling):**
+   ```javascript
+   const resolvedUrl = await resolveStreamUrl(c, {
+     forceRefresh: isManual, // ใช้งานจริง: เป็น false เมื่อรัน Background Polling
+     trigger: isManual ? 'getlist_manual' : 'getlist_fetch',
+   })
+   ```
+   - ในการ Poll เบื้องหลัง จะไม่สั่ง Force Refresh อีกต่อไป ทำให้ Token เดิมที่มีอายุ 6-12 ชั่วโมงถูกใช้งานต่อเนื่องอย่างคุ้มค่า และตัดวงจร Infinite Sync Loop 100%
+
+---
+
+### 16.5 ผลการทดสอบและ Release Build (Verification & APK)
+
+1. **ทดสอบรันสคริปต์ Sync (`node sync_ch3.js`):**
+   - ได้รับ Fresh URL สดใหม่จาก ByteArk: หมดอายุ `07/09/2026 06:20:02 น.` (อายุข้ามคืนกว่า 12 ชั่วโมง)
+   - อัปเดตขึ้น Backend สำเร็จ (`HTTP 200 OK`)
+2. **คอมไพล์ Production APK:**
+   - `npx expo export -p android`: 610 modules bundled สำเร็จ
+   - `./gradlew assembleRelease --no-daemon`: **`BUILD SUCCESSFUL in 16s`** (260 actionable tasks)
+   - คัดลอกและบีบอัดไฟล์พร้อมติดตั้ง:
+     - [**`tvApp.apk`**](tvApp.apk) (ขนาด ~43 MB, Timestamp `06/09/2026 18:23 น.`)
+     - [**`tvApp.apk.zip`**](tvApp.apk.zip) (ขนาด ~26 MB, Timestamp `06/09/2026 18:23 น.`)
+
+---
+
+## 17. ปรับปรุงระบบการเลือกช่องด้วยรีโมต (Explicit Remote OK/Center Selection & Ultra-Vivid Neon Focus Highlight) [06/09/2026 18:52 น.]
+
+### 17.1 อาการที่พบและโจทย์จากผู้ใช้งานจริง
+1. **การเลื่อนดูช่องไม่ควรสลับช่องเอง:** เวลาเลื่อนรีโมต D-pad ขึ้น-ลง ผู้ใช้ต้องการแค่ดูรายชื่อช่องใน Sidebar เท่านั้น แต่โค้ดเดิมมีตัวจับเวลา `450ms` สลับช่องให้อัตโนมัติ ทำให้วิดีโอถูกตัดและสลับช่องทั้งที่ยังไม่ได้ตัดสินใจเลือก
+2. **ต้องกดยืนยันด้วยปุ่มตรงกลางรีโมต:** ต้องกดปุ่มตรงกลาง (OK / Center / Select) บนรีโมตทีวีก่อนเท่านั้น ถึงจะยืนยันเลือกและสลับไปเล่นช่องนั้น
+3. **สีไฮไลต์ (Focus Highlight) ต้องชัดเจนและเด่นสะดุดตา:** แถบไฮไลต์เดิมเป็นสีขาวขุ่นบางๆ (`0.24`) กลืนกับพื้นหลัง มองจากระยะ 3 เมตรบนโซฟาลำบาก ต้องปรับให้เป็นสีสด ชัดเจน โดดเด่น มองเห็นได้ทันที
+
+---
+
+### 17.2 การวิเคราะห์เชิงสถาปัตยกรรมและหลักการที่ถูกต้อง (Leanback TV Standard UX)
+1. **Focus vs Selection Separation:**
+   - **Focus (ย้ายตำแหน่งเล็ง):** เมื่อผู้ใช้กด D-pad Up/Down บนรีโมต อีเวนต์ `onFocus` จะทำงานเพื่อเลื่อนเคอร์เซอร์และขยาย Sidebar ให้เห็นชื่อช่อง แต่ **ต้องไม่มีวันสั่ง `commit(channel)` เด็ดขาด**
+   - **Select (กดยืนยันเลือก):** เมื่อผู้ใช้กดปุ่มตรงกลางรีโมต (`DPAD_CENTER` / Enter) ระบบ Android TV จะยิงอีเวนต์คลิกตรงไปยัง `<Pressable focusable>` ทำให้เกิด `onPress` -> `handleSelectChannel` -> `commit(channel)` เล่นช่องทันทีใน 0ms
+2. **Chromatic Contrast & Visual Affordance บนจอทีวี:**
+   - ผู้ใช้นั่งดูทีวีที่ระยะ 2.5 - 4 เมตร สีโมโนโครมหรือสีขาวใสจะกลืนไปกับความมืด
+   - ใช้คู่สี **Electric Cyan (`#00F0FF`)** ตัดกับพื้นหลัง **Royal Sapphire Blue (`rgba(29, 78, 216, 0.92)`)**
+   - เพิ่มแถบไฟนีออนนำสายตาทางซ้าย (`focusPill`) กว้าง 4px
+   - ใส่เงาเรืองแสงนีออน (`shadowColor: '#00F0FF'`, radius: 10, elevation: 12)
+
+---
+
+### 17.3 รายละเอียดการแก้ไขโค้ดจริง
+1. **`app/App.js`:**
+   - ลบ `switchTimer` และยกเลิกการเรียก `commit(channel)` ภายใน `handleFocusChannel`
+   - การสลับช่องจะถูกเรียกเฉพาะใน `handleSelectChannel` เมื่อผู้ใช้กดปุ่มตรงกลางรีโมตเท่านั้น
+2. **`app/src/components/Sidebar.js`:**
+   - ปรับ `handleFocus` ให้เรียก `onFocusChannel` สะอาด ปราศจากเงื่อนไขเดิม
+   - เพิ่ม `handleSelect` ที่สั่ง `onSelectChannel(channel)` พร้อมตั้งเวลานับถอยหลังย่อ Sidebar อัตโนมัติหลังเลือกเสร็จ (1.8 วินาที)
+   - อัปเกรด `reloadBtnFocused` ให้มีไฮไลต์สีฟ้านีออน `#00F0FF` และสีน้ำเงิน Royal Blue
+3. **`app/src/components/ChannelRow.js`:**
+   - ดีไซน์ `styles.rowFocused` ใหม่หมดจด: ขอบ Electric Cyan หนา 2.5px, พื้นหลัง Royal Sapphire Blue 0.92, เงาเรืองแสงนีออน 12px
+   - เพิ่มแท่งไฟนีออน `focusPill` ด้านซ้ายมือ
+   - เพิ่มกรอบเรืองแสงสีขาวรอบ Avatar เมื่อแถวถูกโฟกัส
+   - ปรับตัวหนังสือชื่อช่องเป็นสีขาวหนา `fontWeight: '900'` และชื่อกลุ่มเป็นสีฟ้าอ่อน `#BAE6FD`
+
+---
+
+### 17.4 ผลการทดสอบและคอมไพล์ APK
+1. **Expo Metro Bundler:**
+   - Bundled 610 modules ใน 3617ms (0 errors)
+2. **Gradle Release Build:**
+   - `./gradlew assembleRelease --no-daemon`: **`BUILD SUCCESSFUL in 19s`** (260 tasks)
+3. **ไฟล์ APK อัปเดตล่าสุด:**
+   - [**`tvApp.apk`**](tvApp.apk) (ขนาด ~43 MB, Timestamp `06/09/2026 18:59 น.`)
+   - [**`tvApp.apk.zip`**](tvApp.apk.zip) (ขนาด ~26 MB, Timestamp `06/09/2026 18:59 น.`)
+
+---
+
+## 18. ขยายเลขช่องในแถบซ้ายใหญ่ขึ้น +25% ถึง +35% และยกระดับไฮไลต์โฟกัสนีออนสว่างจ้าสะใจ (06/09/2026 18:59 น.)
+
+### 18.1 โจทย์และความต้องการของผู้ใช้
+1. **ไฮไลต์สีชัดขึ้นเด่นกว่านี้:** ไฮไลต์ของรายการช่องที่กำลังโฟกัสอยู่ต้องสว่าง คมชัด และสะดุดตาขั้นสุด มองเห็นตำแหน่งโฟกัสได้ชัดเจนทันที 100% จากระยะไกล 3-4 เมตรบนโซฟา ไม่กลืนกับพื้นหลังสีดำของทีวี
+2. **เลขช่องของ panel ซ้ายใหญ่ขึ้น +25%:** ตัวเลขแสดงหมายเลขช่องดิจิทัลทีวีในกล่อง Badge ของแถบซ้าย ต้องขยายใหญ่ขึ้นอีกอย่างน้อย +25% เพื่อให้อ่านเลขช่องได้ง่ายและชัดเจนเต็มตา
+3. **ข้อกำหนดเข้มงวด:** "ห้ามเดา ห้ามพัง", push git และ build standalone APK ใช้งานจริง
+
+### 18.2 การเปลี่ยนแปลงและสถาปัตยกรรม UI
+1. **ดึงตัวเลขช่องดิจิทัลทีวีแท้จริง 100% (`Avatar.js`):**
+   - ใช้ Regex `name.match(/\d+/)` แยกตัวเลขช่องออกมาโดยตรง ได้แก่ ช่อง 3, 5, 7, 9, 23, 24, 25, 29, 31, 32, 34 ฯลฯ
+   - ช่อง Thai PBS แสดงหมายเลข '3' ตามช่องบริการสาธารณะ
+2. **ขยายขนาดตัวเลขช่องใหญ่ขึ้น +25% ถึง +35% (`Avatar.js` & `ChannelRow.js`):**
+   - ขยายขนาดกล่อง Avatar จาก 46px เป็น **52px**
+   - เลข 1 หลัก: ฟอนต์ขนาด **36px** (`size * 0.70`, `lineHeight: 41px`)
+   - เลข 2 หลัก: ฟอนต์ขนาด **30px** (`size * 0.58`, `lineHeight: 34px`, `letterSpacing: -1`) ใหญ่ขึ้นกว่าเดิมเกิน +25% ถึง +35%
+   - จัดให้อยู่กึ่งกลางสมบูรณ์แบบด้วย `textAlignVertical: 'center'` และ `includeFontPadding: false`
+3. **ยกระดับไฮไลต์โฟกัสสว่างจ้า คมชัดสะดุดตาขั้นสุด (`ChannelRow.js` & `Sidebar.js`):**
+   - **พื้นหลัง:** สีน้ำเงินสว่างสดใสทึบแสง 100% `#2563EB` (Vivid Electric Royal Blue)
+   - **ขอบนีออน:** สีฟ้านีออน Electric Cyan (`#00FFFF`) หนาพิเศษ **3.5px**
+   - **เสาไฟนีออนนำสายตาซ้ายมือ (`focusPill`):** กว้าง **6px** สว่างสะดุดตา
+   - **ออร่าเรืองแสงนีออน:** `shadowColor: '#00FFFF'`, `shadowRadius: 16`, `elevation: 18`
+   - **กรอบเรืองแสงรอบตัวเลขช่อง:** กรอบสีฟ้านีออน `#00FFFF` หนา 2.5px
+   - **ตัวหนังสือชื่อช่อง:** สีขาวบริสุทธิ์หนาพิเศษ `fontWeight: '900'` ขนาด **18px** (+28.5%) พร้อม Text Shadow ชัดเจน
+   - **ปุ่มรีโหลดช่อง:** ไฮไลต์ `#2563EB` + ขอบนีออน `#00FFFF` หนา 3.5px สอดคล้องกัน
+4. **ขยายความกว้างแถบซ้าย (`Sidebar.js`):**
+   - `EXPANDED_WIDTH = 235` (เพิ่มจาก 220) ให้พื้นที่สำหรับเลขช่องขนาด 52px และชื่อช่องภาษาไทยอ่านสบายตา
+   - `COLLAPSED_WIDTH = 74` (รองรับ Avatar 52px ได้พอดีสวยงาม)
+   - ปรับ `getItemLayout` เป็น `length: 70, offset: 70 * index` สอดคล้องกับ `height: 64` + `marginBottom: 6` แม่นยำระดับพิกเซล
+
+### 18.3 ผลการ Build และส่งมอบ
+- **Expo Bundler:** Bundled 610 modules ใน 3661ms (0 errors)
+- **Gradle Release Build:** `./gradlew assembleRelease --no-daemon`: **`BUILD SUCCESSFUL in 20s`** (260 tasks)
+- **ไฟล์ APK พร้อมติดตั้ง:**
+  - [**`tvApp.apk`**](tvApp.apk) (ขนาด ~43 MB, อัปเดตล่าสุด `06/09/2026 18:59 น.`)
+  - [**`tvApp.apk.zip`**](tvApp.apk.zip) (ขนาด ~26 MB, อัปเดตล่าสุด `06/09/2026 18:59 น.`)
